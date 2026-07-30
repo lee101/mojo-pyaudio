@@ -1,0 +1,26 @@
+[project]
+name = "mojo-pyaudio"
+version = "0.1.0"
+description = "Mojo-backed PCM stream buffering with a PyAudio-shaped Python API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Lee Penkman", email = "leepenkman@gmail.com" }]
+keywords = ["mojo", "pyaudio", "pcm", "audio", "ring-buffer"]
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyaudio"]
+
+[project.urls]
+Homepage = "https://github.com/lee101/mojo-pyaudio"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+
+[tool.setuptools.packages.find]
+where = ["python"]
