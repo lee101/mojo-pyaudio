@@ -320,6 +320,26 @@ def test_parallel_copy_threshold_roundtrip(monkeypatch, offset, expected_calls):
     assert len(calls) == expected_calls
 
 
+def test_native_parallel_copy_preserves_partition_and_simd_tails():
+    from mojopyaudio._lib import addr, copy_bytes
+    from mojopyaudio.buffer import _PARALLEL_COPY_THRESHOLD
+
+    size = _PARALLEL_COPY_THRESHOLD + 77
+    source = np.arange(size, dtype=np.uint8)
+    destination = np.empty_like(source)
+    copy_bytes(addr(source), addr(destination), size)
+    assert np.array_equal(destination, source)
+
+
+def test_contiguous_uint8_arrays_use_zero_copy_fast_path():
+    source = np.arange(48, dtype=np.uint8).reshape(6, 8)
+    destination = np.empty_like(source)
+    buffer = mpa.PCMBuffer(source.size, format=mpa.paUInt8)
+    assert buffer.write_frames(source) == source.size
+    assert buffer.readinto(destination) == source.size
+    assert np.array_equal(destination, source)
+
+
 def test_manager_helpers_and_empty_virtual_device_inventory():
     manager = mpa.PyAudio()
     assert manager.get_sample_size(mpa.paInt24) == 3

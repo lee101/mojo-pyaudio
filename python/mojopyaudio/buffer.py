@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 import threading
 from typing import Iterator
@@ -12,39 +11,19 @@ from ._lib import addr, copy_bytes, ring_read, ring_transfer, ring_write
 
 _DIRECT_COPY_THRESHOLD = 64 * 1024
 _PARALLEL_COPY_THRESHOLD = 2 * 1024 * 1024
-_PARALLEL_COPY_WORKERS = 4
-_COPY_PARTITION_ALIGNMENT = 64
-_COPY_POOL = ThreadPoolExecutor(
-    max_workers=_PARALLEL_COPY_WORKERS,
-    thread_name_prefix="mojo-pyaudio-copy",
-)
 
 
 def _copy_addresses(source_addr: int, destination_addr: int, count: int) -> None:
-    if count < _PARALLEL_COPY_THRESHOLD:
-        copy_bytes(source_addr, destination_addr, count)
-        return
-    copy_bytes(0, 0, 0)
-    chunk = (count + _PARALLEL_COPY_WORKERS - 1) // _PARALLEL_COPY_WORKERS
-    chunk = (
-        (chunk + _COPY_PARTITION_ALIGNMENT - 1) // _COPY_PARTITION_ALIGNMENT
-    ) * _COPY_PARTITION_ALIGNMENT
-    futures = []
-    for start in range(0, count, chunk):
-        size = min(chunk, count - start)
-        futures.append(
-            _COPY_POOL.submit(
-                copy_bytes, source_addr + start, destination_addr + start, size
-            )
-        )
-    # Keep the caller-owned NumPy buffers alive until every native call has
-    # stopped using its address, even if one worker reports an error.
-    wait(futures)
-    for future in futures:
-        future.result()
+    copy_bytes(source_addr, destination_addr, count)
 
 
 def _readable_bytes(data) -> np.ndarray:
+    if (
+        isinstance(data, np.ndarray)
+        and data.dtype == np.uint8
+        and data.flags.c_contiguous
+    ):
+        return data if data.ndim == 1 else data.reshape(-1)
     try:
         view = memoryview(data)
     except TypeError as exc:
@@ -136,17 +115,6 @@ class PCMBuffer:
             self._write_position = 0
             self._size_frames = 0
 
-    def _frame_count(self, byte_count: int, num_frames: int | None) -> int:
-        if num_frames is None:
-            return byte_count // self.frame_size
-        if not isinstance(num_frames, int):
-            raise TypeError("num_frames must be an integer or None")
-        if num_frames < 0:
-            raise ValueError("num_frames must be non-negative")
-        if byte_count < num_frames * self.frame_size:
-            raise ValueError("frames does not contain num_frames complete frames")
-        return num_frames
-
     def _source_address(self, source: np.ndarray) -> int:
         if self._source_ref is not None and self._source_ref() is source:
             return self._source_addr
@@ -168,15 +136,29 @@ class PCMBuffer:
         exception_on_underflow: bool = False,
     ) -> None:
         del exception_on_underflow
-        source = _readable_bytes(frames)
-        count = self._frame_count(source.size, num_frames)
-        self.write_frames(source, count)
+        self.write_frames(frames, num_frames)
 
     def write_frames(self, frames, num_frames: int | None = None) -> int:
         # Treat every buffer as opaque bytes. Casting an int16/float32 ndarray
         # with astype(uint8) would narrow sample values instead of preserving PCM.
-        source = _readable_bytes(frames)
-        count = self._frame_count(source.size, num_frames)
+        if (
+            isinstance(frames, np.ndarray)
+            and frames.dtype == np.uint8
+            and frames.flags.c_contiguous
+        ):
+            source = frames if frames.ndim == 1 else frames.reshape(-1)
+        else:
+            source = _readable_bytes(frames)
+        if num_frames is None:
+            count = source.size // self.frame_size
+        else:
+            if not isinstance(num_frames, int):
+                raise TypeError("num_frames must be an integer or None")
+            if num_frames < 0:
+                raise ValueError("num_frames must be non-negative")
+            if source.size < num_frames * self.frame_size:
+                raise ValueError("frames does not contain num_frames complete frames")
+            count = num_frames
         if count == 0:
             return 0
         byte_count = count * self.frame_size
@@ -189,7 +171,7 @@ class PCMBuffer:
                 count = self.capacity_frames
                 byte_count = self._storage.size
                 self.clear()
-            missing = count - self.write_available
+            missing = count - (self.capacity_frames - self._size_frames)
             if missing > 0:
                 if self._overflow == "raise":
                     raise BufferError("PCM buffer overflow")
@@ -255,8 +237,25 @@ class PCMBuffer:
             return bytes(destination)
 
     def readinto(self, destination, num_frames: int | None = None) -> int:
-        target = _writable_bytes(destination)
-        count = self._frame_count(target.size, num_frames)
+        if (
+            isinstance(destination, np.ndarray)
+            and destination.dtype == np.uint8
+            and destination.flags.c_contiguous
+            and destination.flags.writeable
+        ):
+            target = destination if destination.ndim == 1 else destination.reshape(-1)
+        else:
+            target = _writable_bytes(destination)
+        if num_frames is None:
+            count = target.size // self.frame_size
+        else:
+            if not isinstance(num_frames, int):
+                raise TypeError("num_frames must be an integer or None")
+            if num_frames < 0:
+                raise ValueError("num_frames must be non-negative")
+            if target.size < num_frames * self.frame_size:
+                raise ValueError("frames does not contain num_frames complete frames")
+            count = num_frames
         with self._lock:
             if count > self._size_frames:
                 raise BufferError("not enough complete PCM frames are buffered")

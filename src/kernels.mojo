@@ -1,10 +1,53 @@
 """Frame-agnostic byte ring operations for interleaved PCM streams."""
 
+from std.runtime import initialize_runtime
+from std.runtime.asyncrt import TaskGroup
 from std.sys import simd_width_of
 
 comptime BytePtr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
 comptime W = simd_width_of[DType.float64]()
 comptime COPY_WIDTH = 8 * W
+comptime PARALLEL_COPY_THRESHOLD = 2 * 1024 * 1024
+comptime PARALLEL_COPY_WORKERS = 4
+comptime COPY_PARTITION_ALIGNMENT = 64
+
+
+@always_inline
+def sync_parallelize[FuncType: def(Int) -> None](func: FuncType, count: Int):
+    @__parameter
+    @always_inline
+    def wrapped(index: Int):
+        func(index)
+
+    @always_inline
+    @__parameter
+    async def task_fn(index: Int):
+        wrapped(index)
+
+    var tasks = TaskGroup()
+    for index in range(count):
+        tasks.create_task(task_fn(index))
+    tasks.wait()
+
+
+@always_inline
+def parallelize[
+    origins: OriginSet,
+    //,
+    func: def(Int) capturing[origins] -> None,
+](num_work_items: Int, num_workers: Int):
+    def unified_func(index: Int):
+        func(index)
+
+    var chunk_size, extra_items = divmod(num_work_items, num_workers)
+
+    @always_inline
+    def worker(worker_index: Int) {imm chunk_size, imm extra_items}:
+        var start = worker_index * chunk_size + min(worker_index, extra_items)
+        for index in range(chunk_size + Int(worker_index < extra_items)):
+            unified_func(start + index)
+
+    sync_parallelize(worker, num_workers)
 
 
 def copy_bytes_serial(source: BytePtr, destination: BytePtr, count: Int):
@@ -18,11 +61,29 @@ def copy_bytes_serial(source: BytePtr, destination: BytePtr, count: Int):
 
 
 def copy_bytes(source_addr: Int, destination_addr: Int, count: Int):
-    copy_bytes_serial(
-        BytePtr(unsafe_from_address=source_addr),
-        BytePtr(unsafe_from_address=destination_addr),
-        count,
-    )
+    var source = BytePtr(unsafe_from_address=source_addr)
+    var destination = BytePtr(unsafe_from_address=destination_addr)
+    if count < PARALLEL_COPY_THRESHOLD:
+        copy_bytes_serial(source, destination, count)
+        return
+
+    initialize_runtime()
+    var chunk = (count + PARALLEL_COPY_WORKERS - 1) // PARALLEL_COPY_WORKERS
+    chunk = (
+        (chunk + COPY_PARTITION_ALIGNMENT - 1) // COPY_PARTITION_ALIGNMENT
+    ) * COPY_PARTITION_ALIGNMENT
+
+    @__parameter
+    def copy_partition(worker: Int):
+        var start = worker * chunk
+        if start < count:
+            copy_bytes_serial(
+                source + start,
+                destination + start,
+                min(chunk, count - start),
+            )
+
+    parallelize[copy_partition](PARALLEL_COPY_WORKERS, PARALLEL_COPY_WORKERS)
 
 
 def valid_ring(capacity: Int, position: Int, count: Int) -> Bool:

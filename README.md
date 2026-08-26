@@ -118,19 +118,21 @@ directions of a write/read or transfer cycle.
 
 | case | Mojo | pure Python | ratio |
 | --- | ---: | ---: | ---: |
-| FIFO write+readinto, 256 frames | 0.29 GiB/s | 0.77 GiB/s | 0.37x slower |
-| FIFO write+readinto, 4K frames | 2.42 GiB/s | 4.23 GiB/s | 0.57x slower |
-| FIFO write+readinto, 256K frames | 7.03 GiB/s | 6.21 GiB/s | 1.13x faster |
-| ring-to-ring transfer, 64K frames | 8.23 GiB/s | 5.73 GiB/s | 1.43x faster |
+| FIFO write+readinto, 256 frames | 0.47 GiB/s | 1.24 GiB/s | 0.38x slower |
+| FIFO write+readinto, 4K frames | 5.47 GiB/s | 6.83 GiB/s | 0.80x slower |
+| FIFO write+readinto, 256K frames | 9.63 GiB/s | 5.73 GiB/s | 1.68x faster |
+| FIFO write+readinto, 1M frames | 19.54 GiB/s | 4.70 GiB/s | 4.16x faster |
+| ring-to-ring transfer, 64K frames | 8.58 GiB/s | 6.37 GiB/s | 1.35x faster |
 
 The result has a clear crossover. For small callback-sized blocks, Python's
 C-level slice copies are already excellent. Blocks up to 64 KiB therefore use
-Python buffer-view copies and avoid ctypes call overhead. Larger blocks cross the
-FFI with cached NumPy addresses and use the Mojo SIMD kernel. Contiguous copy
-segments of at least 2 MiB are split across four host workers, with each
-independent partition executed by that kernel. Mojo wins for large bulk blocks
-and direct ring-to-ring movement. These are real single-machine measurements,
-not projected results.
+Python buffer-view copies and avoid ctypes call overhead. Contiguous `uint8`
+NumPy buffers bypass generic buffer normalization, while larger blocks cross the
+FFI with cached addresses and use the Mojo SIMD kernel. Contiguous copy segments
+of at least 2 MiB are split across four host workers inside the native call, with
+each independent partition executed by that kernel. Mojo wins for large bulk
+blocks and direct ring-to-ring movement. These are real single-machine
+measurements, not projected results.
 
 There is no GPU path. PCM buffering performs opaque byte copies with zero
 floating-point operations per byte, so it is far below the arithmetic-intensity

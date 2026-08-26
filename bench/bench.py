@@ -146,6 +146,7 @@ def main() -> None:
         ("FIFO write+readinto, 256 frames", *fifo_case(256, 50_000)),
         ("FIFO write+readinto, 4K frames", *fifo_case(4096, 8_000)),
         ("FIFO write+readinto, 256K frames", *fifo_case(262_144, 256)),
+        ("FIFO write+readinto, 1M frames", *fifo_case(1_048_576, 128)),
         ("ring-to-ring transfer, 64K frames", *transfer_case(65_536, 1_000)),
     ]
 
